@@ -7,10 +7,13 @@ import time
 import re
 import json
 import os
+import sys
 import signal
 import subprocess
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from queue import Empty
+sys.path.append("/home/mizin/")
 from NexusDB.NexusCore import NexusCore
 
 CHECKPOINT_FILE = "crawler_checkpoint2.json"
@@ -60,7 +63,7 @@ def db_saver_process(data_queue, stop_event):
     start_time = time.time()
     total_saved = 0
     bulk_buffer = []  # 데이터를 모아둘 리스트
-    BULK_SIZE = 10  # 100개씩 모아서 저장
+    BULK_SIZE = 100  # 100개씩 모아서 저장
     
     try:
         while not (stop_event.is_set() and data_queue.empty()):
@@ -93,7 +96,10 @@ def db_saver_process(data_queue, stop_event):
                         # 통계 출력 (현재 시간당 속도 계산)
                         elapsed = time.time() - start_time
                         iph = (total_saved / elapsed) * 3600
-                        print(f" [BULK SAVE] {len(bulk_buffer)}개 저장 완료 | 누적: {total_saved} | 속도: {iph:.1f}/h")
+                        now = datetime.now()
+                        formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+
+                        print(f"[{formatted_time}] [BULK SAVE] {len(bulk_buffer)}개 저장 완료 | 누적: {total_saved} | 속도: {iph:.1f}/h")
                         
                         bulk_buffer = [] # 버퍼 비우기
 
@@ -178,7 +184,7 @@ def url_finder_process2(start_url, url_queue, stop_event):
                 # 이 수치는 P3의 워커 수(50~100)의 5~10배 정도가 적당합니다.
                 if url_queue.qsize() > 200:
                     # 큐가 비워질 때까지 2초씩 쉬면서 체크
-                    print(f"[P2] 대기 중... (현재 큐 잔량: {url_queue.qsize()}개)")
+                    # print(f"[P2] 대기 중... (현재 큐 잔량: {url_queue.qsize()}개)")
                     time.sleep(2)
                     continue
                 # ------------------------------------------
