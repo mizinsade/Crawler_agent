@@ -19,13 +19,13 @@ import subprocess
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from queue import Empty
-sys.path.append("/home/mizin/")
+sys.path.append("/home/sm/Documents/")
 from NexusDB.NexusCore import NexusCore
 
 URL_FIND_PROCESS_WORKER = 1
 CONTETN_EXTRACT_PROCESS_WORKER = 200
-DATABASE_DIR = "/home/mizin/llm_info_db3"
-CHECKPOINT_FILE = os.path.join(DATABASE_DIR , "crawler_checkpoint3.json")
+DATABASE_DIR = "/media/sm/T31/llm_info_db1"
+CHECKPOINT_FILE = os.path.join("/media/sm/T31/", "crawler_checkpoint2.json")
 START_URL = ["https://news.naver.com/", "https://www.bbc.com/news", "https://www.ft.com/world"]
 
 global processed_count
