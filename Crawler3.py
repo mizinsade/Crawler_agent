@@ -57,7 +57,9 @@ CONTETN_EXTRACT_PROCESS_WORKER = 200
 #         core.close()
 #         print("[Process 1] DB 안전 종료 완료.")
 def db_saver_process(data_queue, stop_event):
-    print("[Process 1] DB Saver (Bulk Mode) 가동 중...")
+    now = datetime.now()
+    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{formatted_time}][Process 1] DB Saver (Bulk Mode) 가동 중...")
     core = NexusCore(base_dir="/home/mizin/llm_info_db1")
     
     start_time = time.time()
@@ -127,7 +129,9 @@ def db_saver_process(data_queue, stop_event):
                 else:
                     core.put(b_url, b_content)
         core.close()
-        print("[Process 1] DB 안전 종료.")
+        now = datetime.now()
+        formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{formatted_time}][Process 1] DB 안전 종료.")
 
 # --- 2번 프로세스용 함수들 ---
 def fetch_links(url):
@@ -154,7 +158,9 @@ def save_checkpoint(visited, to_visit):
     data = {"visited": list(visited), "to_visit": list(to_visit)}
     with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
-    print(f"\n[System] 체크포인트 저장 완료. (남은 URL: {len(to_visit)}개)")
+    now = datetime.now()
+    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n[{formatted_time}][System] 체크포인트 저장 완료. (남은 URL: {len(to_visit)}개)")
 
 def load_checkpoint(default_urls):
     if os.path.exists(CHECKPOINT_FILE):
@@ -167,7 +173,9 @@ def load_checkpoint(default_urls):
     return set(), default_urls
 
 def url_finder_process2(start_url, url_queue, stop_event):
-    print("[Process 2] URL Finder 시작")
+    now = datetime.now()
+    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{formatted_time}][Process 2] URL Finder 시작")
     default_urls = [start_url, "https://www.bbc.com/news", "https://www.ft.com/world"]
     visited, to_visit_list = load_checkpoint(default_urls)
     
@@ -214,7 +222,9 @@ def url_finder_process2(start_url, url_queue, stop_event):
                         continue
     finally:
         save_checkpoint(visited, list(to_visit))
-        print("[Process 2] URL Finder 안전 종료.")
+        now = datetime.now()
+        formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{formatted_time}][Process 2] URL Finder 안전 종료.")
 
 # --- 3번 프로세스: 콘텐츠 정제 ---
 def process_content(url):
@@ -327,7 +337,9 @@ def process_content(url):
         return url, "", ""
 
 def content_extractor_process(url_queue, data_queue, stop_event):
-    print("[Process 3] Content Extractor 가동 중...")
+    now = datetime.now()
+    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{formatted_time}][Process 3] Content Extractor 가동 중...")
     with ThreadPoolExecutor(max_workers=CONTETN_EXTRACT_PROCESS_WORKER) as executor:
         while not (stop_event.is_set() and url_queue.empty()):
             try:
@@ -362,10 +374,13 @@ if __name__ == "__main__":
     p3 = multiprocessing.Process(target=content_extractor_process, args=(url_queue, data_queue, stop_event))
 
     def signal_handler(sig, frame):
-        print("\n[System] 종료 신호 수신. 데이터를 정리하고 종료합니다...")
+        now = datetime.now()
+        formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"\n[{formatted_time}][System] 종료 신호 수신. 데이터를 정리하고 종료합니다...")
         stop_event.set()
 
     signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     # 실행
     p1.start()
@@ -377,4 +392,6 @@ if __name__ == "__main__":
     p3.join() # 남은 URL 추출 완료 대기
     p1.join() # 남은 데이터 저장 완료 대기
 
-    print("[System] 모든 작업이 안전하게 완료되었습니다.")
+    now = datetime.now()
+    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{formatted_time}][System] 모든 작업이 안전하게 완료되었습니다.")
