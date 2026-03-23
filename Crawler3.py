@@ -306,6 +306,7 @@ def process_content(url, p2_put_time, data_queue):
         # if result.text: 
             # return url, "", ""
 
+
         soup = BeautifulSoup(html_text, 'lxml')
         # soup = BeautifulSoup(result.stdout, 'lxml')
         
