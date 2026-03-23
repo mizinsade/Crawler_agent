@@ -1,4 +1,6 @@
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import trafilatura
 from urllib.parse import urljoin, urlparse, urlsplit
@@ -21,117 +23,131 @@ URL_FIND_PROCESS_WORKER = 20
 CONTETN_EXTRACT_PROCESS_WORKER = 200
 
 # --- 1번 프로세스: DB 저장 및 통계 출력 ---
-# def db_saver_process(data_queue, stop_event):
-#     print("[Process 1] DB Saver 가동 중...")
-#     core = NexusCore(base_dir="/home/mizin/llm_info_db2")
-#     start_time = time.time()
-#     total_saved = 0
-    
-#     try:
-#         # 종료 신호가 와도 큐가 빌 때까지는 계속 저장
-#         while not (stop_event.is_set() and data_queue.empty()):
-#             try:
-#                 # data 구조: (url, content, q2_wait_time, p3_put_time)
-#                 data = data_queue.get(timeout=1)
-#                 url, content, q2_wait, p3_put_time = data
-                
-#                 q3_wait = time.time() - p3_put_time
-                
-#                 if content:
-#                     core.put(url, content)
-#                     total_saved += 1
-                    
-#                     if total_saved % 10 == 0:
-#                         elapsed = time.time() - start_time
-#                         iph = (total_saved / elapsed) * 3600
-#                         print(f"\n" + "="*50)
-#                         print(f" [REPORT] 저장: {total_saved}개 | 속도: {iph:.1f} items/h")
-#                         print(f" [LATENCY] P2->P3: {q2_wait:.4f}s | P3->P1: {q3_wait:.4f}s")
-#                         print(f" [LATEST] {url[:50]}...")
-#                         print("="*50)
-#                 else:
-#                     print(f"[DB] 내용 없음 스킵: {url}...")
-#             except Empty:
-#                 continue
-#     finally:
-#         core.close()
-#         print("[Process 1] DB 안전 종료 완료.")
 def db_saver_process(data_queue, stop_event):
-    now = datetime.now()
-    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{formatted_time}][Process 1] DB Saver (Bulk Mode) 가동 중...")
-    core = NexusCore(base_dir="/home/mizin/llm_info_db1")
-    
+    print("[Process 1] DB Saver 가동 중...")
+    core = NexusCore(base_dir="/home/mizin/llm_info_db2")
     start_time = time.time()
     total_saved = 0
-    bulk_buffer = []  # 데이터를 모아둘 리스트
-    BULK_SIZE = 100  # 100개씩 모아서 저장
     
     try:
+        # 종료 신호가 와도 큐가 빌 때까지는 계속 저장
         while not (stop_event.is_set() and data_queue.empty()):
             try:
-                # 1. 큐에서 데이터 가져오기
+                # data 구조: (url, content, q2_wait_time, p3_put_time)
                 data = data_queue.get(timeout=1)
-                url, content, description,q2_wait, p3_put_time = data
+                url, content,description ,q2_wait, p3_put_time = data
+                
+                q3_wait = time.time() - p3_put_time
                 
                 if content:
-                    bulk_buffer.append((url, content, description))
-                else:
-                    print(f"[DB 저장 실패] content empty : {url}")
-                
-                # 2. 버퍼가 찼거나, 종료 신호가 왔을 때 저장
-                if len(bulk_buffer) >= BULK_SIZE or (stop_event.is_set() and not data_queue.empty()):
-                    if bulk_buffer:
-                        # NexusCore에 bulk_put 같은 메서드가 있다면 최적이지만, 
-                        # 없다면 루프로 돌려도 내부적인 트랜잭션 처리가 효율적입니다.
-                        for b_url, b_content, b_description in bulk_buffer:
-                            if b_content:
-                                if b_description:
-                                    metadata = {}
-                                    metadata['description'] = b_description
-                                    core.put(b_url, b_content,metadata=metadata)
-                                else:
-                                    core.put(b_url, b_content)
-                        
-                        total_saved += len(bulk_buffer)
-                        
-                        # 통계 출력 (현재 시간당 속도 계산)
+                    if description:
+                        metadata = {}
+                        metadata['description'] = description
+                        core.put(url, content,metadata=metadata)
+                    else:
+                        core.put(url, content)
+                    # core.put(url, content)
+                    total_saved += 1
+                    
+                    if total_saved % 10 == 0:
                         elapsed = time.time() - start_time
                         iph = (total_saved / elapsed) * 3600
                         now = datetime.now()
                         formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
-
-                        print(f"[{formatted_time}] [BULK SAVE] {len(bulk_buffer)}개 저장 완료 | 누적: {total_saved} | 속도: {iph:.1f}/h")
-                        
-                        bulk_buffer = [] # 버퍼 비우기
-
+                        print(f"\n" + "="*50)
+                        print(f" [{formatted_time}]")
+                        print(f" [REPORT] 저장: {total_saved}개 | 속도: {iph:.1f} items/h")
+                        print(f" [LATENCY] P2->P3: {q2_wait:.4f}s | P3->P1: {q3_wait:.4f}s")
+                        print(f" [LATEST] {url[:50]}...")
+                        print("="*50)
+                else:
+                    now = datetime.now()
+                    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"[{formatted_time}][DB] 내용 없음 스킵: {url}...")
             except Empty:
-                # 큐가 비었더라도 버퍼에 남은 게 있다면 저장 (데이터 유실 방지)
-                if bulk_buffer:
-                    for b_url, b_content, b_description in bulk_buffer:
-                        if b_description:
-                            metadata = {}
-                            metadata['description'] = b_description
-                            core.put(b_url, b_content,metadata=metadata)
-                        else:
-                            core.put(b_url, b_content)
-                    total_saved += len(bulk_buffer)
-                    bulk_buffer = []
                 continue
     finally:
-        # 최종 남은 데이터 처리
-        if bulk_buffer:
-            for b_url, b_content, b_description in bulk_buffer:
-                if b_description:
-                    metadata = {}
-                    metadata['description'] = b_description
-                    core.put(b_url, b_content,metadata=metadata)
-                else:
-                    core.put(b_url, b_content)
         core.close()
         now = datetime.now()
         formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{formatted_time}][Process 1] DB 안전 종료.")
+        print(f"[{formatted_time}][Process 1] DB 안전 종료 완료.")
+
+# def db_saver_process(data_queue, stop_event):
+#     now = datetime.now()
+#     formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+#     print(f"[{formatted_time}][Process 1] DB Saver (Bulk Mode) 가동 중...")
+#     core = NexusCore(base_dir="/home/mizin/llm_info_db1")
+    
+#     start_time = time.time()
+#     total_saved = 0
+#     bulk_buffer = []  # 데이터를 모아둘 리스트
+#     BULK_SIZE = 100  # 100개씩 모아서 저장
+    
+#     try:
+#         while not (stop_event.is_set() and data_queue.empty()):
+#             try:
+#                 # 1. 큐에서 데이터 가져오기
+#                 data = data_queue.get(timeout=1)
+#                 url, content, description,q2_wait, p3_put_time = data
+                
+#                 if content:
+#                     bulk_buffer.append((url, content, description))
+#                 else:
+#                     print(f"[DB 저장 실패] content empty : {url}")
+                
+#                 # 2. 버퍼가 찼거나, 종료 신호가 왔을 때 저장
+#                 if len(bulk_buffer) >= BULK_SIZE or (stop_event.is_set() and not data_queue.empty()):
+#                     if bulk_buffer:
+#                         # NexusCore에 bulk_put 같은 메서드가 있다면 최적이지만, 
+#                         # 없다면 루프로 돌려도 내부적인 트랜잭션 처리가 효율적입니다.
+#                         for b_url, b_content, b_description in bulk_buffer:
+#                             if b_content:
+#                                 if b_description:
+#                                     metadata = {}
+#                                     metadata['description'] = b_description
+#                                     core.put(b_url, b_content,metadata=metadata)
+#                                 else:
+#                                     core.put(b_url, b_content)
+                        
+#                         total_saved += len(bulk_buffer)
+                        
+#                         # 통계 출력 (현재 시간당 속도 계산)
+#                         elapsed = time.time() - start_time
+#                         iph = (total_saved / elapsed) * 3600
+#                         now = datetime.now()
+#                         formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+
+#                         print(f"[{formatted_time}] [BULK SAVE] {len(bulk_buffer)}개 저장 완료 | 누적: {total_saved} | 속도: {iph:.1f}/h")
+                        
+#                         bulk_buffer = [] # 버퍼 비우기
+
+#             except Empty:
+#                 # 큐가 비었더라도 버퍼에 남은 게 있다면 저장 (데이터 유실 방지)
+#                 if bulk_buffer:
+#                     for b_url, b_content, b_description in bulk_buffer:
+#                         if b_description:
+#                             metadata = {}
+#                             metadata['description'] = b_description
+#                             core.put(b_url, b_content,metadata=metadata)
+#                         else:
+#                             core.put(b_url, b_content)
+#                     total_saved += len(bulk_buffer)
+#                     bulk_buffer = []
+#                 continue
+#     finally:
+#         # 최종 남은 데이터 처리
+#         if bulk_buffer:
+#             for b_url, b_content, b_description in bulk_buffer:
+#                 if b_description:
+#                     metadata = {}
+#                     metadata['description'] = b_description
+#                     core.put(b_url, b_content,metadata=metadata)
+#                 else:
+#                     core.put(b_url, b_content)
+#         core.close()
+#         now = datetime.now()
+#         formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+#         print(f"[{formatted_time}][Process 1] DB 안전 종료.")
 
 # --- 2번 프로세스용 함수들 ---
 def fetch_links(url):
@@ -226,6 +242,23 @@ def url_finder_process2(start_url, url_queue, stop_event):
         formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{formatted_time}][Process 2] URL Finder 안전 종료.")
 
+_SESSION = None
+
+def get_session():
+    global _SESSION
+    if _SESSION is None:
+        _SESSION = requests.Session()
+        # 커넥션 풀 설정 (워커 수만큼 풀을 넉넉히 잡습니다)
+        adapter = HTTPAdapter(
+            pool_connections=CONTETN_EXTRACT_PROCESS_WORKER, 
+            pool_maxsize=CONTETN_EXTRACT_PROCESS_WORKER,
+            max_retries=Retry(total=3, backoff_factor=0.1)
+        )
+        _SESSION.mount('http://', adapter)
+        _SESSION.mount('https://', adapter)
+        _SESSION.headers.update({'User-Agent': 'Mozilla/5.0...'})
+    return _SESSION
+
 # --- 3번 프로세스: 콘텐츠 정제 ---
 def process_content(url):
     try:
@@ -240,42 +273,21 @@ def process_content(url):
         # # HTML이 아니거나(예: 이미지), 용량이 너무 크면(예: 2MB 초과) 즉시 포기
         # if "content-type: text/html" not in header:
         #     return url, ""
+        session = get_session()
 
-
-        # 1. 파일의 앞부분 15KB만 가져오기 (헤더 포함 아님, 본문의 Range)
-        # -L: 리다이렉트 추적, -s: 조용히, -r: 0바이트부터 15360바이트까지만
-        # res = subprocess.run(
-        #     ['curl', '-s', '-L', '-r', '0-15360', '--connect-timeout', '2', '--max-time', '4', '-A', 'Mozilla/5.0', url],
+        # result = subprocess.run(
+        #     ['curl', '-s', '-L', '--max-time', '5', '-A', 'Mozilla/5.0', url],
         #     capture_output=True, text=True, encoding='utf-8', errors='ignore'
         # )
-        
-        # partial_html = res.stdout
-        # if not partial_html: return url, ""
+        result = session.get(url, timeout=5)
+        # if result.status_code != 200: 
+        #     print("wtf")
+        #     return url, "", ""
+        # if result.text: 
+            # return url, "", ""
 
-        # 2. BeautifulSoup으로 앞부분만 파싱
-        # soup = BeautifulSoup(partial_html, 'html.parser')
-        
-        # 3. 메타데이터 추출 (기존 방식 그대로 사용 가능)
-        # desc_tag = (soup.find("meta", attrs={"name": "description"}) or 
-        #             soup.find("meta", attrs={"property": "og:description"}))
-        
-        # if desc_tag and desc_tag.get("content"):
-        #     final_content = desc_tag["content"].strip()
-
-        # if not final_content:
-        #     title_tag = (soup.find("meta", attrs={"name": "title"}) or 
-        #                  soup.find("meta", attrs={"property": "og:title"}))
-        #     if title_tag and title_tag.get("content"):
-        #         final_content = title_tag["content"].strip()
-        
-        # soup = None
-        # if not final_content:
-        result = subprocess.run(
-            ['curl', '-s', '-L', '--max-time', '5', '-A', 'Mozilla/5.0', url],
-            capture_output=True, text=True, encoding='utf-8', errors='ignore'
-        )
-        if not result.stdout: return url, "", ""
-        soup = BeautifulSoup(result.stdout, 'html.parser')
+        soup = BeautifulSoup(result.text, 'lxml')
+        # soup = BeautifulSoup(result.stdout, 'lxml')
         
         final_description = ""
         final_content = ""
@@ -308,7 +320,8 @@ def process_content(url):
         #         final_content = re.sub(r'\s+', ' ', raw_text).strip()
 
         if not final_content:
-            final_content = trafilatura.extract(result.stdout)
+            final_content = trafilatura.extract(result.text)
+            # final_content = trafilatura.extract(result.stdout)
 
         if not final_content:
             for noisy in soup(["script", "style", "header", "footer", "nav", "aside", "form","br"]):
