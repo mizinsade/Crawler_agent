@@ -1,10 +1,14 @@
 import requests
+from dateutil import parser
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import trafilatura
+from trafilatura.meta import reset_caches
+import gc
 from urllib.parse import urljoin, urlparse, urlsplit
 import multiprocessing
+import threading
 import time
 import re
 import json
@@ -18,31 +22,41 @@ from queue import Empty
 sys.path.append("/home/mizin/")
 from NexusDB.NexusCore import NexusCore
 
-CHECKPOINT_FILE = "crawler_checkpoint2.json"
-URL_FIND_PROCESS_WORKER = 20
+URL_FIND_PROCESS_WORKER = 1
 CONTETN_EXTRACT_PROCESS_WORKER = 200
+DATABASE_DIR = "/home/mizin/llm_info_db3"
+CHECKPOINT_FILE = os.path.join(DATABASE_DIR , "crawler_checkpoint3.json")
+START_URL = ["https://news.naver.com/", "https://www.bbc.com/news", "https://www.ft.com/world"]
+
+global processed_count
+processed_count = 1
 
 # --- 1번 프로세스: DB 저장 및 통계 출력 ---
 def db_saver_process(data_queue, stop_event):
     print("[Process 1] DB Saver 가동 중...")
-    core = NexusCore(base_dir="/home/mizin/llm_info_db2")
+    core = NexusCore(base_dir=DATABASE_DIR)
+    core.close()
+    core = NexusCore(base_dir=DATABASE_DIR)
     start_time = time.time()
     total_saved = 0
     
     try:
         # 종료 신호가 와도 큐가 빌 때까지는 계속 저장
-        while not (stop_event.is_set() and data_queue.empty()):
+        while True:#not (stop_event.is_set() and data_queue.empty()):
             try:
                 # data 구조: (url, content, q2_wait_time, p3_put_time)
                 data = data_queue.get(timeout=1)
-                url, content,description ,q2_wait, p3_put_time = data
+                if data is None:
+                    print("[Process 1] 종료 신호를 수신했습니다. 잔여 데이터를 정리합니다.")
+                    break
+                url, content,metadata ,q2_wait, p3_put_time = data
                 
                 q3_wait = time.time() - p3_put_time
                 
                 if content:
-                    if description:
-                        metadata = {}
-                        metadata['description'] = description
+                    if metadata:
+                        # metadata = {}
+                        # metadata['description'] = description
                         core.put(url, content,metadata=metadata)
                     else:
                         core.put(url, content)
@@ -192,7 +206,7 @@ def url_finder_process2(start_url, url_queue, stop_event):
     now = datetime.now()
     formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{formatted_time}][Process 2] URL Finder 시작")
-    default_urls = [start_url, "https://www.bbc.com/news", "https://www.ft.com/world"]
+    default_urls = start_url
     visited, to_visit_list = load_checkpoint(default_urls)
     
     # 리스트를 데크로 변환 (성능 최적화)
@@ -241,6 +255,7 @@ def url_finder_process2(start_url, url_queue, stop_event):
         now = datetime.now()
         formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{formatted_time}][Process 2] URL Finder 안전 종료.")
+        print(f"[{formatted_time}][Process 2] 남은 URL {url_queue.qsize()}개.")
 
 _SESSION = None
 
@@ -260,7 +275,11 @@ def get_session():
     return _SESSION
 
 # --- 3번 프로세스: 콘텐츠 정제 ---
-def process_content(url):
+def process_content(url, p2_put_time, data_queue):
+    session = get_session()
+    soup = None
+    html_text = ""
+
     try:
 
         # 1. HEAD 요청으로 메타데이터만 확인 (매우 빠름)
@@ -269,24 +288,25 @@ def process_content(url):
         #     capture_output=True, text=True, errors='ignore'
         # )
         # header = head_res.stdout.lower()
-
+        # date_info = None
         # # HTML이 아니거나(예: 이미지), 용량이 너무 크면(예: 2MB 초과) 즉시 포기
         # if "content-type: text/html" not in header:
         #     return url, ""
-        session = get_session()
+        # session = get_session()
 
         # result = subprocess.run(
         #     ['curl', '-s', '-L', '--max-time', '5', '-A', 'Mozilla/5.0', url],
         #     capture_output=True, text=True, encoding='utf-8', errors='ignore'
         # )
-        result = session.get(url, timeout=5)
+        with session.get(url, timeout=5) as result:
+            html_text = result.text
         # if result.status_code != 200: 
         #     print("wtf")
         #     return url, "", ""
         # if result.text: 
             # return url, "", ""
 
-        soup = BeautifulSoup(result.text, 'lxml')
+        soup = BeautifulSoup(html_text, 'lxml')
         # soup = BeautifulSoup(result.stdout, 'lxml')
         
         final_description = ""
@@ -320,7 +340,12 @@ def process_content(url):
         #         final_content = re.sub(r'\s+', ' ', raw_text).strip()
 
         if not final_content:
-            final_content = trafilatura.extract(result.text)
+            final_content = trafilatura.extract(
+            html_text, 
+            no_fallback=True, 
+            include_comments=False, 
+            include_tables=False
+        )
             # final_content = trafilatura.extract(result.stdout)
 
         if not final_content:
@@ -331,10 +356,31 @@ def process_content(url):
             if best_div:
                 final_content = best_div.get_text(separator=' ', strip=True)
 
-                
+        date_tags = [
+        ('property', 'article:published_time'),
+        ('name', 'pubdate'),
+        ('name', 'publishdate'),
+        ('property', 'og:reg_date'),      # 일부 한국 언론사 전용
+        ('name', 'dc.date.issued'),
+        ('name', 'date'),
+        ]
 
-        refined_content = re.sub(r'\s+', ' ', final_content).strip()
-        refined_description = re.sub(r'\s+', ' ', final_description).strip()
+        publish_date = ""
+        refine_date = ""
+        for attr, value in date_tags:
+            tag = soup.find('meta', {attr: value})
+            if tag and tag.get('content'):
+                publish_date = tag['content'].strip()
+
+        if publish_date:
+            try:
+                dt = parser.parse(publish_date)
+                refine_date = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                pass # 파싱 실패 시 원본 유지
+
+        # refined_content = re.sub(r'\s+', ' ', final_content).strip()
+        # refined_description = re.sub(r'\s+', ' ', final_description).strip()
 
         # 품질 검사
         # if len(refined_content) < 150:  # 너무 짧은 글 (로그인 창, 에러 메시지 등)
@@ -344,56 +390,123 @@ def process_content(url):
         # spam_keywords = ["javascript is disabled", "enable cookies", "access denied"]
         # if any(key in refined_content.lower() for key in spam_keywords):
         #     return url, ""
+        metadata = {}
+        if final_description : metadata['description'] = re.sub(r'\s+', ' ', final_description).strip()
+        if refine_date : metadata['publish_date'] = refine_date
+        data_to_send_metadata = metadata if metadata else None
 
-        return url, refined_content, refined_description
-    except:
-        return url, "", ""
+        data_queue.put((url, re.sub(r'\s+', ' ', final_content).strip(), data_to_send_metadata,time.time() - p2_put_time, time.time()))
+        # return url, refined_content, refined_description
+        # global processed_count
+        # processed_count += 1
+        # print(processed_count)
+        return 1
+    except Exception as e:
+        # [중요] 예외 객체를 즉시 날려서 Traceback이 지역 변수를 붙잡지 못하게 함
+        print(e)
+        e = None 
+        return 0#url, "", ""
+    finally:
+        # 3. [핵심] BeautifulSoup 트리의 순환 참조를 강제로 끊어 메모리 폭발 방지
+        if soup:
+            soup.decompose() 
+            
+        # 4. 남아있는 대용량 변수 명시적 삭제
+        html_text = None
+        soup = None
 
 def content_extractor_process(url_queue, data_queue, stop_event):
     now = datetime.now()
     formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{formatted_time}][Process 3] Content Extractor 가동 중...")
+
+        # 메모리 추적 시작
+    # tracemalloc.start()
+    max_queue_size = int(CONTETN_EXTRACT_PROCESS_WORKER * 1.5)
+    semaphore = threading.Semaphore(max_queue_size)
+
+    global processed_count
+
     with ThreadPoolExecutor(max_workers=CONTETN_EXTRACT_PROCESS_WORKER) as executor:
-        while not (stop_event.is_set() and url_queue.empty()):
+        while True:#not (stop_event.is_set() and url_queue.empty()):
             try:
                 # 큐에서 (url, p2_put_time) 꺼냄
                 target_url, p2_put_time = url_queue.get(timeout=1)
-                q2_wait_time = time.time() - p2_put_time
+                # q2_wait_time = time.time() - p2_put_time
                 
-                future = executor.submit(process_content, target_url)
+                future = executor.submit(process_content, target_url, p2_put_time, data_queue)
+                # executor.submit(process_content, target_url, p2_put_time, data_queue)
                 
-                def done_callback(fut, q2_wait=q2_wait_time):
-                    res_url, res_content, res_description = fut.result()
+                semaphore.acquire()
+                
+                # if processed_count % 1001 == 0 or processed_count % 1002 == 0 or processed_count % 1003 == 0 or processed_count % 1004 == 0 or processed_count % 1005 == 0 or processed_count % 1006 == 0 or processed_count % 1007 == 0 or processed_count % 1008 == 0 or processed_count % 1009 == 0:
+                #     # 2. Process 3 내부에서 캐시 및 GC 청소 (여기서 해야 의미가 있습니다!)
+                #     # reset_caches()
+                #     # gc.collect()
+                #     # 1. 범인 색출 로직
+                #     snapshot = tracemalloc.take_snapshot()
+                #     top_stats = snapshot.statistics('lineno')
+                #     print("\n" + "="*50)
+                #     print(f"[Process 3 메모리 누수 추적 - Top 5]")
+                #     for stat in top_stats[:19]:
+                #         print(stat)
+                #     print("="*50 + "\n")
+                if processed_count % 100 == 0:
+                    reset_caches()
+                    gc.collect()
+                    now = datetime.now()
+                    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"[{formatted_time}][System] 메모리 최적화")
+                    processed_count = 1
+                #     # 1. 범인 색출 로직
+                #     snapshot = tracemalloc.take_snapshot()
+                #     top_stats = snapshot.statistics('lineno')
+                #     print("\n" + "="*50)
+                #     print(f"[Process 3 메모리 누수 추적 - Top 5]")
+                #     for stat in top_stats[:19]:
+                #         print(stat)
+                #     print("="*50 + "\n")
+
+                def done_callback(fut):
+                    num = fut.result()
+                    global processed_count
+                    processed_count += num
+                    
+                    semaphore.release()
                     # (url, content, P2대기시간, P3넣은시간)
-                    data_queue.put((res_url, res_content, res_description,q2_wait, time.time()))
+                    # data_queue.put((res_url, res_content, res_description,q2_wait, time.time()))
                 
                 future.add_done_callback(done_callback)
             except Empty:
+                if stop_event.is_set(): break
                 continue
+    data_queue.put(None)
     print("[Process 3] Content Extractor 안전 종료.")
+
+def signal_handler(sig, frame, stop_event):
+    now = datetime.now()
+    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n[{formatted_time}][System] 종료 신호 수신. 데이터를 정리하고 종료합니다...")
+    stop_event.set()
+
+signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 # --- 메인 실행부 ---
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn') # DB 연결 안정성을 위해 권장
     
-    manager = multiprocessing.Manager()
-    url_queue = manager.Queue()
-    data_queue = manager.Queue()
+    url_queue = multiprocessing.Queue()
+    data_queue = multiprocessing.Queue()
     stop_event = multiprocessing.Event()
+
+    signal.signal(signal.SIGINT, lambda sig, frame: signal_handler(sig, frame, stop_event))
+    signal.signal(signal.SIGTERM, lambda sig, frame: signal_handler(sig, frame, stop_event))
 
     # 프로세스 설정
     p1 = multiprocessing.Process(target=db_saver_process, args=(data_queue, stop_event))
-    p2 = multiprocessing.Process(target=url_finder_process2, args=("https://news.naver.com/", url_queue, stop_event))
+    p2 = multiprocessing.Process(target=url_finder_process2, args=(START_URL, url_queue, stop_event))
     p3 = multiprocessing.Process(target=content_extractor_process, args=(url_queue, data_queue, stop_event))
 
-    def signal_handler(sig, frame):
-        now = datetime.now()
-        formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"\n[{formatted_time}][System] 종료 신호 수신. 데이터를 정리하고 종료합니다...")
-        stop_event.set()
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
 
     # 실행
     p1.start()
