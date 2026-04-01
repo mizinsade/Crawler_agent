@@ -404,7 +404,7 @@ def process_content(url, p2_put_time, data_queue):
         return 1
     except Exception as e:
         # [중요] 예외 객체를 즉시 날려서 Traceback이 지역 변수를 붙잡지 못하게 함
-        print(f"[process 3]{e}")
+        # print(f"[process 3]{e}")
         e = None 
         return 0#url, "", ""
     finally:
