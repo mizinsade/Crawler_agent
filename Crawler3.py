@@ -24,7 +24,7 @@ from NexusDB.NexusCore import NexusCore
 
 URL_FIND_PROCESS_WORKER = 5
 CONTETN_EXTRACT_PROCESS_WORKER = 80
-DATABASE_DIR = "/media/sm/T31/llm_info_db1"
+DATABASE_DIR = "/media/sm/T31/llm_info_db2"
 CHECKPOINT_FILE = os.path.join("/media/sm/T31/", "crawler_checkpoint2.json")
 START_URL = ["https://news.naver.com/", "https://www.bbc.com/news", "https://www.ft.com/world"]
 
