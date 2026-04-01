@@ -365,22 +365,23 @@ def process_content(url, p2_put_time, data_queue):
         ('name', 'date'),
         ]
 
-        publish_date = None
-        refine_date = None
+        publish_date = ""
+        refine_date = ""
         for attr, value in date_tags:
             tag = soup.find('meta', {attr: value})
             if tag and tag.get('content'):
                 publish_date = tag['content'].strip()
 
-        if publish_date is not None:
+        if publish_date is not None and publish_date:
             try:
                 dt = parser.parse(publish_date)
                 refine_date = dt.strftime("%Y-%m-%d %H:%M:%S")
             except:
+                refine_date = ""
                 pass # 파싱 실패 시 원본 유지
 
-        # refined_content = re.sub(r'\s+', ' ', final_content).strip()
-        # refined_description = re.sub(r'\s+', ' ', final_description).strip()
+        refined_content = re.sub(r'\s+', ' ', final_content).strip()
+        refined_description = re.sub(r'\s+', ' ', final_description).strip()
 
         # 품질 검사
         # if len(refined_content) < 150:  # 너무 짧은 글 (로그인 창, 에러 메시지 등)
@@ -391,11 +392,11 @@ def process_content(url, p2_put_time, data_queue):
         # if any(key in refined_content.lower() for key in spam_keywords):
         #     return url, ""
         metadata = {}
-        if final_description : metadata['description'] = re.sub(r'\s+', ' ', final_description).strip()
-        if refine_date : metadata['publish_date'] = refine_date
+        if final_description is not None and final_description: metadata['description'] = re.sub(r'\s+', ' ', final_description).strip()
+        if refine_date is not None and refine_date: metadata['publish_date'] = refine_date
         data_to_send_metadata = metadata if metadata else None
 
-        data_queue.put((url, re.sub(r'\s+', ' ', final_content).strip(), data_to_send_metadata,time.time() - p2_put_time, time.time()))
+        data_queue.put((url, refined_content, data_to_send_metadata,time.time() - p2_put_time, time.time()))
         # return url, refined_content, refined_description
         # global processed_count
         # processed_count += 1
@@ -403,7 +404,7 @@ def process_content(url, p2_put_time, data_queue):
         return 1
     except Exception as e:
         # [중요] 예외 객체를 즉시 날려서 Traceback이 지역 변수를 붙잡지 못하게 함
-        print(e)
+        print(f"[process 3]{e}")
         e = None 
         return 0#url, "", ""
     finally:
