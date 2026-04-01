@@ -365,14 +365,14 @@ def process_content(url, p2_put_time, data_queue):
         ('name', 'date'),
         ]
 
-        publish_date = ""
-        refine_date = ""
+        publish_date = None
+        refine_date = None
         for attr, value in date_tags:
             tag = soup.find('meta', {attr: value})
             if tag and tag.get('content'):
                 publish_date = tag['content'].strip()
 
-        if publish_date:
+        if publish_date is not None:
             try:
                 dt = parser.parse(publish_date)
                 refine_date = dt.strftime("%Y-%m-%d %H:%M:%S")
