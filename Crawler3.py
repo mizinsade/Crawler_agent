@@ -28,8 +28,6 @@ DATABASE_DIR = "/media/sm/T31/llm_info_db2"
 CHECKPOINT_FILE = os.path.join("/media/sm/T31/", "crawler_checkpoint2.json")
 START_URL = ["https://news.naver.com/", "https://www.bbc.com/news", "https://www.ft.com/world"]
 
-global processed_count
-processed_count = 1
 
 # --- 1번 프로세스: DB 저장 및 통계 출력 ---
 def db_saver_process(data_queue, stop_event):
@@ -416,21 +414,21 @@ def process_content(url, p2_put_time, data_queue):
         # 4. 남아있는 대용량 변수 명시적 삭제
         html_text = None
         soup = None
-
+import tracemalloc
 def content_extractor_process(url_queue, data_queue, stop_event):
     now = datetime.now()
     formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{formatted_time}][Process 3] Content Extractor 가동 중...")
 
         # 메모리 추적 시작
-    # tracemalloc.start()
-    max_queue_size = int(CONTETN_EXTRACT_PROCESS_WORKER * 1.5)
+    tracemalloc.start()
+    max_queue_size = int(CONTETN_EXTRACT_PROCESS_WORKER * 1.2)
     semaphore = threading.Semaphore(max_queue_size)
 
-    global processed_count
+    processed_count = 1
 
-    with ThreadPoolExecutor(max_workers=CONTETN_EXTRACT_PROCESS_WORKER) as executor:
-        while True:#not (stop_event.is_set() and url_queue.empty()):
+    with ThreadPoolExecutor(max_workers=CONTETN_EXTRACT_PROCESS_WORKER,max_tasks_per_child=100) as executor:
+        while True: #not (stop_event.is_set() and url_queue.empty()):
             try:
                 # 큐에서 (url, p2_put_time) 꺼냄
                 target_url, p2_put_time = url_queue.get(timeout=1)
@@ -439,6 +437,7 @@ def content_extractor_process(url_queue, data_queue, stop_event):
                 future = executor.submit(process_content, target_url, p2_put_time, data_queue)
                 # executor.submit(process_content, target_url, p2_put_time, data_queue)
                 
+                processed_count += 1
                 semaphore.acquire()
                 
                 # if processed_count % 1001 == 0 or processed_count % 1002 == 0 or processed_count % 1003 == 0 or processed_count % 1004 == 0 or processed_count % 1005 == 0 or processed_count % 1006 == 0 or processed_count % 1007 == 0 or processed_count % 1008 == 0 or processed_count % 1009 == 0:
@@ -453,26 +452,26 @@ def content_extractor_process(url_queue, data_queue, stop_event):
                 #     for stat in top_stats[:19]:
                 #         print(stat)
                 #     print("="*50 + "\n")
-                if processed_count % 100 == 0:
+                # print(processed_count)
+                if processed_count >= 1000:
                     reset_caches()
                     gc.collect()
                     now = datetime.now()
                     formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
-                    print(f"[{formatted_time}][System] 메모리 최적화")
-                    processed_count = 1
-                #     # 1. 범인 색출 로직
-                #     snapshot = tracemalloc.take_snapshot()
-                #     top_stats = snapshot.statistics('lineno')
-                #     print("\n" + "="*50)
-                #     print(f"[Process 3 메모리 누수 추적 - Top 5]")
-                #     for stat in top_stats[:19]:
-                #         print(stat)
-                #     print("="*50 + "\n")
+                    print(f"[{formatted_time}][System] 메모리 최적화", flush=True)
+                    processed_count = 0
+                    # 1. 범인 색출 로직
+                    snapshot = tracemalloc.take_snapshot()
+                    top_stats = snapshot.statistics('lineno')
+                    print("\n" + "="*50)
+                    print(f"[Process 3 메모리 누수 추적 - Top 5]")
+                    for stat in top_stats[:19]:
+                        print(stat)
+                    print("="*50 + "\n")
 
                 def done_callback(fut):
                     num = fut.result()
-                    global processed_count
-                    processed_count += num
+                    #processed_count += num
                     
                     semaphore.release()
                     # (url, content, P2대기시간, P3넣은시간)
@@ -482,6 +481,8 @@ def content_extractor_process(url_queue, data_queue, stop_event):
             except Empty:
                 if stop_event.is_set(): break
                 continue
+            except Exception as e:
+                print(f"에러 발생: {e}", flush=True)
     data_queue.put(None)
     print("[Process 3] Content Extractor 안전 종료.")
 
@@ -492,6 +493,7 @@ def signal_handler(sig, frame, stop_event):
     stop_event.set()
 
 signal.signal(signal.SIGINT, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 # --- 메인 실행부 ---
 if __name__ == "__main__":
